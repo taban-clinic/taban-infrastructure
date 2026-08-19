@@ -26,8 +26,8 @@
         msg: |
           Memory:
             Total: {{ (ansible_memtotal_mb / 1024) | round(2) }} GB
-            Available: {{ (ansible_memavailable_mb / 1024) | round(2) }} GB
-            Used: {{ ((ansible_memtotal_mb - ansible_memavailable_mb) / 1024) | round(2) }} GB
+            Free: {{ (ansible_memfree_mb / 1024) | round(2) }} GB
+            Used: {{ ((ansible_memtotal_mb - ansible_memfree_mb) / 1024) | round(2) }} GB
 
     - name: Check CPU cores
       debug:

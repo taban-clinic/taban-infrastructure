@@ -1,0 +1,142 @@
+---
+- name: Verify Arvan Server Readiness
+  hosts: arvan_servers
+  gather_facts: yes
+  tasks:
+    - name: Display server information
+      debug:
+        msg: |
+          ===== SERVER READINESS CHECK =====
+          Hostname: {{ ansible_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel: {{ ansible_kernel }}
+          Architecture: {{ ansible_machine }}
+
+    - name: Check disk usage
+      shell: df -h / | tail -1
+      register: disk_usage
+      changed_when: false
+
+    - name: Display disk usage
+      debug:
+        msg: "Disk: {{ disk_usage.stdout }}"
+
+    - name: Check memory
+      debug:
+        msg: |
+          Memory:
+            Total: {{ (ansible_memtotal_mb / 1024) | round(2) }} GB
+            Available: {{ (ansible_memavailable_mb / 1024) | round(2) }} GB
+            Used: {{ ((ansible_memtotal_mb - ansible_memavailable_mb) / 1024) | round(2) }} GB
+
+    - name: Check CPU cores
+      debug:
+        msg: "CPU Cores: {{ ansible_processor_vcpus }}"
+
+    - name: Check network connectivity
+      block:
+        - name: Ping 8.8.8.8 (Google DNS)
+          command: ping -c 1 8.8.8.8
+          register: google_ping
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Display Google DNS ping result
+          debug:
+            msg: "Google DNS reachable: {{ 'YES' if google_ping.rc == 0 else 'NO - Network may be restricted' }}"
+
+        - name: Ping 1.1.1.1 (Cloudflare DNS)
+          command: ping -c 1 1.1.1.1
+          register: cloudflare_ping
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Display Cloudflare DNS ping result
+          debug:
+            msg: "Cloudflare DNS reachable: {{ 'YES' if cloudflare_ping.rc == 0 else 'NO' }}"
+
+        - name: Check DNS resolution
+          command: nslookup archive.ubuntu.com
+          register: dns_check
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Display DNS status
+          debug:
+            msg: "DNS resolution: {{ 'OK' if dns_check.rc == 0 else 'FAILED - Ubuntu mirrors may not resolve' }}"
+
+    - name: Check package manager access
+      block:
+        - name: Update apt cache (timeout after 30s)
+          command: timeout 30 apt-get update
+          register: apt_update
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Display apt status
+          debug:
+            msg: "Package manager: {{ 'OK' if apt_update.rc == 0 else 'FAILED - May need proxy configuration' }}"
+
+    - name: Check required packages
+      package_facts:
+        manager: apt
+      register: package_facts
+      ignore_errors: yes
+
+    - name: Display installed packages summary
+      debug:
+        msg: "Total packages installed: {{ package_facts.ansible_facts.ansible_pkg_mgr | default('unknown') }}"
+
+    - name: Check for critical tools
+      block:
+        - name: Check if curl is installed
+          command: which curl
+          register: curl_check
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Check if git is installed
+          command: which git
+          register: git_check
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Check if Python3 is installed
+          command: which python3
+          register: python3_check
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Display critical tools status
+          debug:
+            msg: |
+              Critical tools:
+                curl: {{ 'INSTALLED' if curl_check.rc == 0 else 'MISSING' }}
+                git: {{ 'INSTALLED' if git_check.rc == 0 else 'MISSING' }}
+                python3: {{ 'INSTALLED' if python3_check.rc == 0 else 'MISSING' }}
+
+    - name: Check SSH configuration
+      block:
+        - name: Check SSH key authentication
+          shell: grep -i "PasswordAuthentication no" /etc/ssh/sshd_config
+          register: ssh_key_auth
+          ignore_errors: yes
+          changed_when: false
+
+        - name: Display SSH security status
+          debug:
+            msg: "SSH key-only auth: {{ 'ENABLED ✓' if ssh_key_auth.rc == 0 else 'NOT ENFORCED - Password auth may be enabled' }}"
+
+    - name: Readiness Summary
+      debug:
+        msg: |
+          ===== READINESS SUMMARY =====
+          Server is {{ 'READY' if (disk_usage.rc | default(0) == 0 and
+                                   google_ping.rc | default(1) == 0 and
+                                   python3_check.rc | default(1) == 0)
+                        else 'NEEDS ATTENTION' }}
+
+          Next steps:
+          1. If network is restricted, configure proxy in .envrc
+          2. If packages are missing, run: ansible-playbook ansible/playbooks/base.yml
+          3. Review any FAILED checks above and address before deploying

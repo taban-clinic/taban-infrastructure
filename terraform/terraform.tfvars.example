@@ -1,0 +1,24 @@
+# Terraform variables for Arvan Cloud provisioning
+# Copy to terraform.tfvars and fill in values
+# terraform.tfvars is in .gitignore and must never be committed
+
+datacenter   = "ir-thr-ba1"     # Bamdad, West Tehran
+environment  = "production"
+project_name = "taban"
+server_name  = "dr-yousefi"
+
+# Instance size: g2-general-1, g2-general-2, g2-general-4, etc.
+# See Arvan docs for available flavors
+server_flavor = "g2-general-2"
+
+disk_size    = 100              # GB
+enable_backup = true
+enable_ipv4   = true
+enable_ipv6   = false
+ha_enabled    = true
+
+tags = {
+  Terraform   = "true"
+  Project     = "taban"
+  Environment = "production"
+}

@@ -33,3 +33,9 @@ venv/
 
 # Logs
 *.log
+.claude-drafts/
+
+# branch-rules: per-issue worktrees
+.worktrees/
+.sid-identity
+.envrc

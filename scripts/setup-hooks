@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# One-time (per clone) wiring so the enforcement hooks in scripts/git-hooks/
+# actually run. core.hooksPath is a LOCAL config value — it is NOT cloned — so
+# every fresh clone / machine must run this once.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+git -C "$root" config core.hooksPath scripts/git-hooks
+echo "✓ core.hooksPath = scripts/git-hooks  (pre-push enforcement active)"

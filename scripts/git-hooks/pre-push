@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Enforces the repo's branch rules on THIS machine. Free/private GitHub has no
+# server-side rulesets, so the guard lives here. Wired in via
+#   git config core.hooksPath scripts/git-hooks   (run scripts/setup-hooks once)
+#
+# Rules enforced:
+#   1. main advances ONLY by a version tag. A push that updates refs/heads/main
+#      is rejected unless the pushed commit already carries a v* tag (that's what
+#      `scripts/promote` does: tag dev, fast-forward main, push both together).
+#   2. dev is integration-only: no direct pushes. Work lands on dev via a PR
+#      merged server-side (gh pr merge), not a local push. Escape hatch:
+#      ALLOW_DEV_PUSH=1 git push ...
+#
+# stdin lines: <local ref> <local sha> <remote ref> <remote sha>
+set -euo pipefail
+
+zero='0000000000000000000000000000000000000000'
+red() { printf '\033[31m%s\033[0m\n' "$1" >&2; }
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Branch deletions (local sha all-zero) are always fine.
+  [ "$local_sha" = "$zero" ] && continue
+
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master)
+      # Must point at a v* tag — i.e. it came through the promote flow.
+      tags=$(git tag --points-at "$local_sha" 'v*' 2>/dev/null || true)
+      if [ -z "$tags" ]; then
+        red "✗ Blocked: direct push to ${remote_ref#refs/heads/}."
+        red "  The released branch advances ONLY by a version tag. Promote instead:"
+        red "      scripts/promote vX.Y.Z"
+        red "  (tags the current dev commit, fast-forwards the released branch, pushes both)"
+        exit 1
+      fi
+      ;;
+    refs/heads/dev)
+      if [ "${ALLOW_DEV_PUSH:-}" != "1" ]; then
+        red "✗ Blocked: direct push to dev."
+        red "  dev is integration-only — land work via a PR (gh pr merge)."
+        red "  Escape hatch: ALLOW_DEV_PUSH=1 git push origin dev"
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+exit 0

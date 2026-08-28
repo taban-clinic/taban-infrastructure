@@ -124,6 +124,36 @@ Ansible inventory is pre-configured with ProxyCommand — no manual setup needed
 - Network latency through proxy is normal (10–30s)
 - Increase timeout: `ansible_connection_timeout=60`
 
+## ⚠️ Known risks (ArvanCloud provider/API) — 2026-08-24
+
+Sourced from `arvancloud-eco` (a separate knowledge-base repo tracking
+ArvanCloud API/Terraform facts across accounts, including this one and
+`aiautobiz`). Full sourcing and re-check commands live there
+(`docs/gotchas.md`, `docs/reference/kb-matrix.md`,
+`docs/reference/gitlab-subgroup-survey-2026-08-24.md`).
+
+- **`data.arvancloud_iaas_images` always returns 0 results.** `terraform/server.tf`'s
+  commented-out `data "arvancloud_iaas_images" "ubuntu" {}` will not work as
+  written — `GET /images` only lists your own private images, never the
+  public Ubuntu/Debian catalog. Hardcode a known-good image UUID instead
+  (see `aiautobiz.ir/infra/lab.tf` for the pattern: Ubuntu 24.04 =
+  `22e2c810-7ddd-45cd-9f60-37d5553e8894`, independently confirmed working on
+  both this account and `aiautobiz`'s).
+- **`data.arvancloud_iaas_ssh_keys` gets an IAM permission denial** for a
+  custom machine-user role on `aiautobiz`'s account — untested here, but
+  likely to hit the same wall given `terraform/server.tf`'s commented-out
+  `data "arvancloud_iaas_ssh_keys" "taban" {}`. Verify against this repo's
+  actual role before uncommenting `server.tf`; if denied, key injection may
+  need to go through the panel manually for now.
+- **This repo's provider pin (`~> 0.4.0`) is well behind the source-audited
+  `v0.6.0`** — VPC (added 0.6.0) and the current DBaaS/Cloudlogs schemas
+  postdate this pin. Bump and re-verify before relying on any resource
+  beyond core IaaS (server/network/security-group/flavor).
+- **Provider `source` is confirmed correct.** `terraform/provider.tf`'s
+  `terraform.arvancloud.ir/arvancloud/arvancloud` is the unified, current
+  provider — a separate legacy `.../arvancloud/iaas` provider also exists on
+  GitLab (stale since 2026-04-19); don't substitute it.
+
 ## Identity
 
 This repo uses GitHub identity: `tabandentalclinic0-dev`

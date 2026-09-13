@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# SSH forced command for the CI deploy key (the m4 self-hosted runner).
+# Install as ONE line in /home/ubuntu/.ssh/authorized_keys on the server:
+#
+#   command="/home/ubuntu/taban-infrastructure/deploy/bin/deploy-gate",restrict ssh-ed25519 AAAA... taban-deploy-runner
+#
+# Allowed requests (anything else is refused with exit 126 and logged):
+#   rsync <artifact files> <host>:       upload into $INCOMING_DIR only (write-only, via rrsync)
+#   deploy <app> <artifact-file-name>    deploy an uploaded <app>-<vX.Y.Z>-<sha7>.tgz
+#   rollback <app>                       roll back to the previous release
+#   status <app>                         show release status
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INCOMING_DIR="${INCOMING_DIR:-$HOME/apps/incoming}"
+RRSYNC="${RRSYNC:-rrsync}"
+DEPLOY_RELEASE="${DEPLOY_RELEASE:-$here/deploy-release}"
+request="${SSH_ORIGINAL_COMMAND:-}"
+
+note() { logger -t deploy-gate -- "$*" 2>/dev/null || true; }
+deny() {
+  note "DENIED: ${request:0:300}"
+  echo "deploy-gate: request not allowed" >&2
+  exit 126
+}
+
+note "request: ${request:0:300}"
+
+if [[ "$request" == "rsync --server "* ]]; then
+  mkdir -p "$INCOMING_DIR"
+  exec "$RRSYNC" -wo -no-del "$INCOMING_DIR"
+fi
+
+read -r -a argv <<<"$request"
+case "${#argv[@]} ${argv[0]:-}" in
+  "3 deploy")
+    [[ "${argv[2]}" =~ ^[a-z0-9][a-z0-9-]*-v[0-9][0-9A-Za-z.+-]*-[0-9a-f]{7}\.tgz$ ]] || deny
+    exec "$DEPLOY_RELEASE" deploy "${argv[1]}" "$INCOMING_DIR/${argv[2]}"
+    ;;
+  "2 rollback" | "2 status")
+    exec "$DEPLOY_RELEASE" "${argv[0]}" "${argv[1]}"
+    ;;
+  *) deny ;;
+esac

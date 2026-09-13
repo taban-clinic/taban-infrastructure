@@ -1,0 +1,48 @@
+services:
+  # Healthchecks: 30s steady interval (5s only during start_period) to cut
+  # exec churn on the 1-vCPU host. init: true reaps healthcheck zombies.
+  db:
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      interval: 30s
+      start_period: 60s
+      start_interval: 5s
+
+  auth:
+    mem_limit: 128m
+    ports: []
+    healthcheck:
+      interval: 30s
+      start_period: 30s
+      start_interval: 5s
+
+  rest:
+    mem_limit: 128m
+    ports: []
+    healthcheck:
+      interval: 30s
+      start_period: 30s
+      start_interval: 5s
+
+  studio:
+    init: true
+    healthcheck:
+      interval: 60s
+      start_period: 60s
+      start_interval: 5s
+
+  meta:
+    init: true
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/health').then((r) => {if (r.status !== 200) throw new Error(r.status)})\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
+
+  api-gw:
+    ports: !override
+      - "127.0.0.1:58000:8000"

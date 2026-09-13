@@ -110,7 +110,14 @@ restart_unit
 if wait_healthy; then
   record ok "$release_id" ""
   log "✓ $app migrated; running $release_id from $app_dir/current"
-  log "  $old_dir is untouched; remove it only after at least a week of normal deploys"
+  log "  $old_dir is untouched; remove it only after at least a week of normal deploys, and only once nothing else lives in it"
+  if command -v docker >/dev/null 2>&1; then
+    while IFS= read -r wd; do
+      case "$wd" in
+        "$old_dir" | "$old_dir"/*) log "  WARNING: Docker Compose project runs from $wd; do NOT remove $old_dir until it is relocated" ;;
+      esac
+    done < <(docker ps -a --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null | sort -u)
+  fi
   exit 0
 fi
 

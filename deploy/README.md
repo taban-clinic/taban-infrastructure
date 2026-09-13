@@ -99,7 +99,12 @@ bin/deploy-release status dr-yousefi-site
   so the very first CI deploy already has a rollback target.
 - `--from-tarball <tgz>` uses a CI artifact instead (for the two apps that aren't standalone yet).
 - Env files are **copied** to `shared/` (mode 600); `~/<app>` is never modified. Delete it by
-  hand only after at least a week of normal deploys.
+  hand only after at least a week of normal deploys, **and only once nothing else lives in it**.
+  `migrate-app` warns if a Docker Compose project still runs from inside the old directory.
+- ⚠️ **Never delete `~/clinic-next`** while `~/clinic-next/lab` is the live working directory of
+  the `lab` Compose project (Directus + the clinic Postgres, including `lab/.env`; see
+  `services/lab-directus/apply.conf`). Relocate that project first, as a separate planned
+  change, then remove the old app directory.
 - On failure the old unit file is restored and restarted automatically, and `current` is
   removed so the migration can be retried.
 - Unit changes vs. the old units: `WorkingDirectory` is `~/apps/<app>/current`, the app

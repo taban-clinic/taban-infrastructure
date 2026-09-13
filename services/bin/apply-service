@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Apply services/<service>/ from this pinned checkout to the live Docker Compose project.
+#
+#   apply-service <service> [--dry-run]        service: lab-directus | umami | supabase
+#
+# Runs the compose files straight from the checkout with the live project name and
+# directory, recreates ONLY the listed services whose config hash differs from the
+# running container, waits for them (--wait), then runs the HTTP checks.
+# Exit codes: 0 applied or nothing to do, 1 refused, 2 applied but unhealthy,
+# 3 another apply holds the lock, 64 usage.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
+
+usage() {
+  echo "usage: apply-service <service> [--dry-run]" >&2
+  exit 64
+}
+
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then usage; fi
+dry_run=0
+if [ $# -eq 2 ]; then
+  [ "$2" = --dry-run ] || usage
+  dry_run=1
+fi
+load_service "$1"
+
+[ -d "$LIVE_DIR" ] || die "live directory not found: $LIVE_DIR"
+for f in "${REQUIRE_FILES[@]}"; do
+  [ -f "$LIVE_DIR/$f" ] || die "required file missing: $LIVE_DIR/$f"
+done
+if repo_dirty; then die "checkout $REPO has local modifications; it must stay a clean, pinned checkout"; fi
+sha="$(git -C "$REPO" rev-parse HEAD)"
+compose config --quiet || die "compose config is invalid for $svc"
+
+mapfile -t drift < <(drifted_services)
+if [ "${#drift[@]}" -eq 0 ]; then
+  log "✓ $svc ($PROJECT) already matches ${sha:0:7}; nothing to apply"
+  exit 0
+fi
+changed=()
+for line in "${drift[@]}"; do
+  case "$line" in
+    *" not-defined-in-compose") die "apply.conf lists '${line%% *}' but the compose files don't define it" ;;
+  esac
+  log "  $line"
+  changed+=("${line%% *}")
+done
+log "$svc ($PROJECT) @ ${sha:0:7}: will recreate ${changed[*]}"
+
+if [ "$dry_run" -eq 1 ]; then
+  compose up --dry-run --no-deps -d "${changed[@]}" >&2 || true
+  log "dry run: nothing changed"
+  exit 0
+fi
+
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/$svc.lock"
+flock -n 9 || die "another apply of $svc is in progress" 3
+prev_sha="$(jq -r '.sha // empty' "$STATE_DIR/$svc.json" 2>/dev/null || true)"
+
+result=ok
+if ! compose up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "${changed[@]}"; then result=unhealthy; fi
+if [ "$result" = ok ] && [ "${#HTTP_CHECKS[@]}" -gt 0 ] && ! wait_http; then result=unhealthy; fi
+
+printf '%s %s result=%s sha=%s recreated=%s\n' "$(now)" "$svc" "$result" "$sha" "${changed[*]}" >>"$STATE_DIR/apply.log"
+if [ "$result" = ok ]; then
+  jq -n --arg service "$svc" --arg sha "$sha" --arg previous "$prev_sha" --arg at "$(now)" --arg recreated "${changed[*]}" \
+    '{service: $service, sha: $sha, previous_sha: $previous, at: $at, recreated: $recreated}' >"$STATE_DIR/$svc.json.tmp"
+  mv -f "$STATE_DIR/$svc.json.tmp" "$STATE_DIR/$svc.json"
+  log "✓ $svc applied at ${sha:0:7} (recreated: ${changed[*]})"
+  exit 0
+fi
+die "$svc applied at ${sha:0:7} but is unhealthy. To revert: git -C $REPO checkout --detach ${prev_sha:-<last good sha>} && $0 $svc" 2

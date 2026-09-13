@@ -1,0 +1,13 @@
+# Install: sudo install -m 644 services/systemd/taban-drift-check.{service,timer} /etc/systemd/system/
+#          sudo systemctl daemon-reload && sudo systemctl enable --now taban-drift-check.timer
+[Unit]
+Description=Taban shared VM: drift check of services/* against the pinned checkout
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/taban-infrastructure/services/bin/drift-check
+Nice=10
+IOSchedulingClass=idle

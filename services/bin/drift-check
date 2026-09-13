@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Drift check for the shared VM: every services/*/apply.conf project is compared with
+# its running containers (Compose config hashes), and this checkout must be clean.
+#
+#   drift-check          exit 0 in sync, 1 drift found, 2 a check could not run
+#
+# DRIFT/ERROR lines also go to the journal (journalctl -t drift-check). Set ALERT_CMD
+# to a shell command that reads the full report on stdin to get notified.
+# Runs nightly via services/systemd/taban-drift-check.timer.
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
+
+check_one() {  # runs in a subshell; prints report lines; exit 0 ok, 1 drift, 2 error
+  load_service "$1"
+  if [ ! -d "$LIVE_DIR" ]; then echo "DRIFT $svc: live directory $LIVE_DIR is missing"; exit 1; fi
+  if ! compose config --quiet >/dev/null 2>&1; then echo "ERROR $svc ($PROJECT): compose config is invalid"; exit 2; fi
+  local line
+  local -a drift
+  mapfile -t drift < <(drifted_services)
+  if [ "${#drift[@]}" -eq 0 ]; then
+    echo "OK    $svc ($PROJECT): ${SERVICES[*]} match the checkout"
+    exit 0
+  fi
+  for line in "${drift[@]}"; do echo "DRIFT $svc ($PROJECT): $line"; done
+  exit 1
+}
+
+status=0
+report=""
+emit() {
+  printf '%s\n' "$1"
+  report+="$1"$'\n'
+}
+
+emit "INFO  checkout $REPO at $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if repo_dirty; then
+  emit "DRIFT checkout: $REPO has local modifications (it must stay a clean, pinned checkout)"
+  status=1
+fi
+
+for conf in "$REPO"/services/*/apply.conf; do
+  [ -f "$conf" ] || continue
+  name="$(basename "$(dirname "$conf")")"
+  out="$(check_one "$name" 2>&1)"
+  rc=$?
+  emit "$out"
+  case "$rc" in
+    0) ;;
+    1) if [ "$status" -eq 0 ]; then status=1; fi ;;
+    *) status=2 ;;
+  esac
+done
+
+if [ "$status" -ne 0 ]; then
+  while IFS= read -r line; do
+    logger -t drift-check -p user.warning -- "$line" 2>/dev/null || true
+  done < <(grep -E '^(DRIFT|ERROR)' <<<"$report")
+  if [ -n "${ALERT_CMD:-}" ]; then
+    printf '%s' "$report" | bash -c "$ALERT_CMD" || log "ALERT_CMD failed"
+  fi
+fi
+exit "$status"

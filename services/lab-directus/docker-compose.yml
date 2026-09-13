@@ -1,0 +1,44 @@
+name: lab
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_DATABASE}"]
+      interval: 30s
+      start_period: 60s
+      start_interval: 5s
+      timeout: 5s
+      retries: 10
+
+  directus:
+    image: directus/directus:11
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_CLIENT: pg
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${DIRECTUS_PORT}:8055"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 512m
+
+volumes:
+  pgdata:

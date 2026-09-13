@@ -20,7 +20,14 @@ stray `docker compose up` from inside `services/<x>/` on a laptop with no `--pro
 override will still create fresh local volumes, not touch production. Never run these against
 the live server without an explicit `--project-directory` argument pointing at the real
 `~/umami-infra` / `~/clinic-next/lab`; getting this wrong there creates a new, empty volume in
-place of the real data (Umami's DB, or the `clinic_prod` DB behind `/booking`).
+place of the real data (Umami's DB, or the clinic database behind `/booking`).
+
+## Published ports
+
+Docker-published ports **bypass UFW** on this host (Docker's iptables rules accept the
+traffic before UFW's allow-list is consulted). Every `ports:` entry here must bind to
+`127.0.0.1` unless the port is deliberately public — Caddy and the site apps reach these
+services over localhost. Verify from outside the box, never assume UFW covers it.
 
 ## Secrets
 

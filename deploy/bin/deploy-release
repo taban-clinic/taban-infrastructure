@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Server-side release deploy for the Next.js sites on the shared origin VM.
+#
+#   deploy-release deploy   <app> <path/to/<app>-<vX.Y.Z>-<sha7>.tgz>
+#   deploy-release rollback <app> [release-id]
+#   deploy-release status   <app>
+#   deploy-release health   <app>
+#
+# Exit codes: 0 ok, 1 refused or failed-and-rolled-back, 2 failed and the app is
+# down, 3 another operation holds the lock, 64 usage. Layout, artifact contract
+# and runbook: deploy/README.md
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: deploy-release deploy   <app> <artifact.tgz>
+       deploy-release rollback <app> [release-id]
+       deploy-release status   <app>
+       deploy-release health   <app>
+EOF
+  exit 64
+}
+
+cmd_deploy() {
+  [ $# -eq 2 ] || usage
+  load_app "$1"
+  local tgz="$2" prev
+  lock_app
+  verify_tarball "$tgz"
+  install_release "$tgz"
+  prev="$(current_release)"
+  switch_to "$release_id"
+  log "$app: ${prev:-<none>} -> $release_id"
+  restart_unit
+  if wait_healthy; then
+    record ok "$release_id" "$prev"
+    prune "$release_id" "$prev"
+    log "✓ $app $release_id is live"
+    return 0
+  fi
+
+  log "$app $release_id failed health checks (${HEALTH_PATHS[*]} on :$PORT within ${HEALTH_TIMEOUT}s)"
+  if [ -n "$prev" ] && [ -d "$app_dir/releases/$prev" ]; then
+    switch_to "$prev"
+    restart_unit
+    if wait_healthy; then
+      record rolled-back "$prev" "$(previous_release)"
+      die "deploy of $release_id failed; rolled back to $prev" 1
+    fi
+    record rollback-failed "$prev" ""
+    die "deploy of $release_id failed AND rollback to $prev is unhealthy; $app is down" 2
+  fi
+  record failed "$release_id" ""
+  die "deploy of $release_id failed and there is no previous release; $app is down" 2
+}
+
+cmd_rollback() {
+  if [ $# -lt 1 ] || [ $# -gt 2 ]; then usage; fi
+  load_app "$1"
+  lock_app
+  local cur target="${2:-}"
+  cur="$(current_release)"
+  [ -n "$target" ] || target="$(previous_release)"
+  [ -n "$target" ] || die "no previous release recorded for $app; pass one explicitly (see: deploy-release status $app)"
+  if ! [[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || [ ! -d "$app_dir/releases/$target" ]; then
+    die "no such release: $target"
+  fi
+  [ "$target" != "$cur" ] || die "$target is already the current release"
+
+  switch_to "$target"
+  restart_unit
+  if wait_healthy; then
+    record rollback "$target" "$cur"
+    log "✓ $app rolled back to $target (was ${cur:-<none>})"
+    return 0
+  fi
+  if [ -n "$cur" ]; then
+    switch_to "$cur"
+    restart_unit
+    if wait_healthy; then die "$target failed health checks; switched back to $cur" 1; fi
+  fi
+  history_line rollback-failed "${cur:-}" "$target"
+  die "$target failed health checks and ${cur:-<none>} is unhealthy too; $app is down" 2
+}
+
+cmd_status() {
+  [ $# -eq 1 ] || usage
+  load_app "$1"
+  local cur r mark
+  cur="$(current_release)"
+  echo "app:      $app (unit $UNIT, port $PORT)"
+  echo "current:  ${cur:-<none>}"
+  echo "unit:     $("${SYSTEMCTL_CMD[@]}" is-active "$UNIT" 2>/dev/null || true)"
+  if healthy; then echo "health:   ok (${HEALTH_PATHS[*]})"; else echo "health:   FAILING (${HEALTH_PATHS[*]})"; fi
+  if [ -f "$app_dir/deployed.json" ]; then echo "last:     $(jq -c '{result, current, previous, at}' "$app_dir/deployed.json")"; fi
+  echo "releases (newest first):"
+  while IFS= read -r r; do
+    mark="  "
+    if [ "$r" = "$cur" ]; then mark="* "; fi
+    echo "  $mark$r"
+  done < <(list_releases)
+}
+
+cmd_health() {
+  [ $# -eq 1 ] || usage
+  load_app "$1"
+  if wait_healthy; then echo "ok"; else echo "failing"; exit 1; fi
+}
+
+case "${1:-}" in
+  deploy) shift; cmd_deploy "$@" ;;
+  rollback) shift; cmd_rollback "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  health) shift; cmd_health "$@" ;;
+  *) usage ;;
+esac

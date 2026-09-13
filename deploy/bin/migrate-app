@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# One-time cutover of a live app from its old directory (~/<app>) and unit to the
+# release layout (~/apps/<app>/{releases,current,shared}) and deploy/systemd/<unit>.service.
+#
+#   migrate-app <app> --seed-from-live [--dry-run]       old dir is already a standalone build
+#   migrate-app <app> --from-tarball <tgz> [--dry-run]   first artifact from CI
+#
+# Never deletes or modifies the old directory or its env files. The previous unit
+# file is backed up and restored automatically if the new layout fails its health checks.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
+
+UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
+TEMPLATE_DIR="${TEMPLATE_DIR:-$DEPLOY_DIR/systemd}"
+read -r -a SUDO_CMD <<<"${SUDO-sudo}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: migrate-app <app> --seed-from-live [--dry-run]
+       migrate-app <app> --from-tarball <artifact.tgz> [--dry-run]
+EOF
+  exit 64
+}
+
+[ $# -ge 2 ] || usage
+load_app "$1"
+shift
+mode="" tgz="" dry_run=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seed-from-live) mode=seed ;;
+    --from-tarball) mode=tarball; tgz="${2:-}"; [ -n "$tgz" ] || usage; shift ;;
+    --dry-run) dry_run=1 ;;
+    *) usage ;;
+  esac
+  shift
+done
+[ -n "$mode" ] || usage
+
+old_dir="${OLD_DIR:-$HOME/$app}"
+template="$TEMPLATE_DIR/$UNIT.service"
+unit_file="$UNIT_DIR/$UNIT.service"
+
+# Preflight: everything is checked before anything changes.
+[ -d "$old_dir" ] || die "old app directory not found: $old_dir"
+[ -f "$template" ] || die "no unit template: $template"
+grep -qxF "WorkingDirectory=$app_dir/current" "$template" \
+  || die "$template must set WorkingDirectory=$app_dir/current"
+[ -f "$unit_file" ] || die "no existing unit to replace: $unit_file"
+if [ -L "$app_dir/current" ] || [ -e "$app_dir/current" ]; then
+  die "$app already uses the release layout ($app_dir/current exists)"
+fi
+for f in "${ENV_FILES[@]}"; do
+  [ -f "$old_dir/$f" ] || die "env file missing in old dir: $old_dir/$f"
+done
+if [ "$mode" = seed ]; then
+  [ -f "$old_dir/server.js" ] || die "$old_dir is not a standalone build (no server.js); use --from-tarball"
+  release_id="legacy-$(date -u +%Y%m%dT%H%M%SZ)"
+  source_desc="copied from $old_dir"
+else
+  verify_tarball "$tgz"
+  source_desc="unpacked from $(basename "$tgz")"
+fi
+if ! healthy; then log "note: $app is not healthy before migration"; fi
+
+cat >&2 <<EOF
+Migration plan for $app
+  old dir:    $old_dir (kept as-is)
+  new layout: $app_dir/{releases,current,shared}
+  env files:  ${ENV_FILES[*]} -> $app_dir/shared/ (copied, mode 600)
+  release:    $release_id ($source_desc)
+  unit:       $unit_file is backed up and replaced by $template, then restarted and health-checked;
+              on failure the backup is restored and restarted
+EOF
+if [ "$dry_run" -eq 1 ]; then
+  log "dry run: nothing changed"
+  exit 0
+fi
+
+lock_app
+mkdir -p "$app_dir/releases" "$app_dir/shared" "$app_dir/unit-backup"
+for f in "${ENV_FILES[@]}"; do
+  if [ -e "$app_dir/shared/$f" ]; then
+    cmp -s "$old_dir/$f" "$app_dir/shared/$f" \
+      || die "$app_dir/shared/$f already exists and differs from $old_dir/$f; resolve by hand"
+  else
+    install -m 600 "$old_dir/$f" "$app_dir/shared/$f"
+  fi
+done
+
+if [ "$mode" = seed ]; then
+  tmp="$app_dir/releases/.incoming-$release_id-$$"
+  rsync -a --exclude='/.env*' "$old_dir/" "$tmp/"
+  printf 'tag=legacy\nsha=unknown\nsource=%s\nseeded_at=%s\n' "$old_dir" "$(now)" >"$tmp/RELEASE"
+  link_env "$tmp"
+  mv -T "$tmp" "$app_dir/releases/$release_id"
+  touch "$app_dir/releases/$release_id"
+else
+  install_release "$tgz"
+fi
+switch_to "$release_id"
+
+backup="$app_dir/unit-backup/$UNIT.service.$(date -u +%Y%m%dT%H%M%SZ)"
+cp -p "$unit_file" "$backup"
+log "installing $template -> $unit_file (backup: $backup)"
+"${SUDO_CMD[@]}" install -m 644 "$template" "$unit_file"
+"${SYSTEMCTL_CMD[@]}" daemon-reload || log "warning: daemon-reload returned an error"
+restart_unit
+if wait_healthy; then
+  record ok "$release_id" ""
+  log "✓ $app migrated; running $release_id from $app_dir/current"
+  log "  $old_dir is untouched; remove it only after at least a week of normal deploys"
+  exit 0
+fi
+
+log "$app is unhealthy on the new layout; restoring $backup"
+"${SUDO_CMD[@]}" install -m 644 "$backup" "$unit_file"
+"${SYSTEMCTL_CMD[@]}" daemon-reload || log "warning: daemon-reload returned an error"
+restart_unit
+rm -f "$app_dir/current"
+if wait_healthy; then
+  history_line migration-reverted "" "$release_id"
+  die "migration failed; old unit restored and healthy. $app_dir left in place for inspection (current removed, so it can be retried)" 1
+fi
+history_line migration-reverted-unhealthy "" "$release_id"
+die "migration failed AND the restored old unit is unhealthy; $app is down" 2

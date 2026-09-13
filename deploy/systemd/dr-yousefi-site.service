@@ -1,0 +1,21 @@
+# Installed to /etc/systemd/system/ by deploy/bin/migrate-app. This file is the source of truth.
+[Unit]
+Description=dr-yousefi.ir Next.js site (release layout)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/dr-yousefi-site/current
+EnvironmentFile=/home/ubuntu/apps/dr-yousefi-site/shared/.env
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=7332
+ExecStart=/opt/node/bin/node server.js
+Restart=on-failure
+RestartSec=5
+MemoryHigh=200M
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

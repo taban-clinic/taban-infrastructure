@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly drift check for the Taban shared VM
+
+[Timer]
+# After the 03:30 UTC Supabase backup, before Iran business hours.
+OnCalendar=*-*-* 04:15:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

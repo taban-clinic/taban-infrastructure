@@ -65,6 +65,44 @@ to a config identical to the live one in every field besides those secrets.
   either — out of scope for this PR, worth its own follow-up.
 - Runtime state that must never be touched by a repo-driven sync (no `rsync --delete`,
   no copying into these paths): `~/supabase-infra/volumes/db/data` (bind-mounted Postgres
-  data), and every service's real `.env`. How the server and this repo actually stay in
-  sync going forward (pull-based checkout + apply script vs. something else) is an open
-  question tracked in #14/discussion #15 — not decided by this PR.
+  data), and every service's real `.env`. `bin/apply-service` never copies anything into
+  the live directories (see below).
+
+## Applying changes to the live server
+
+Decided in #14: a **pinned, read-only checkout** of this repo on the VM plus
+`services/bin/apply-service`, run by hand. Nothing is copied into the live directories:
+Compose reads the files straight from the checkout, with the live project name and
+directory, so `.env` files, bind mounts and named volumes stay exactly where they are.
+
+```bash
+git -C ~/taban-infrastructure fetch origin
+git -C ~/taban-infrastructure checkout --detach <merged sha>
+~/taban-infrastructure/services/bin/apply-service umami --dry-run   # shows which services would be recreated
+~/taban-infrastructure/services/bin/apply-service umami
+```
+
+- `services/<name>/apply.conf` sets the live project name and directory, the compose files,
+  the **explicit list of services to manage**, required live files (e.g. `.env`) and HTTP
+  checks. Supabase's upstream file also defines realtime, storage, imgproxy, functions and
+  supavisor; they aren't deployed here, aren't listed, and are never started by an apply.
+- Only listed services whose Compose config hash differs from the running container are
+  recreated (`up -d --no-deps --wait`), then the HTTP checks run.
+- Exit codes: `0` applied or nothing to do, `1` refused (dirty checkout, missing live file,
+  invalid compose), `2` applied but unhealthy (prints the revert command), `3` locked.
+- State: `~/apps/services/<name>.json` (last good sha) and `~/apps/services/apply.log`.
+
+### Drift check
+
+`services/bin/drift-check` compares every managed service's running config hash with
+the checkout and flags local edits to the checkout. Exit `0` in sync, `1` drift, `2` a
+check could not run. DRIFT lines go to `journalctl -t drift-check`; set `ALERT_CMD` to
+pipe the report to a notifier (no alert channel chosen yet). It runs nightly at 04:15 UTC
+via `services/systemd/taban-drift-check.{service,timer}` (install commands are in the unit file).
+
+Verified 2026-09-13: the config hashes of all 10 running containers match these files on `dev`.
+
+### Tests
+
+`services/tests/run.sh` runs both scripts end to end from a throwaway git checkout with a
+stub `docker`; no containers are touched.

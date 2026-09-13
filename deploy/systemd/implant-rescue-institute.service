@@ -1,0 +1,22 @@
+# Installed to /etc/systemd/system/ by deploy/bin/migrate-app. This file is the source of truth.
+[Unit]
+Description=implantrescue.ir Next.js site (release layout)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/implant-rescue-institute/current
+EnvironmentFile=/home/ubuntu/apps/implant-rescue-institute/shared/.env.production.local
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=7334
+ExecStart=/opt/node/bin/node server.js
+Restart=on-failure
+RestartSec=5
+MemoryHigh=300M
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

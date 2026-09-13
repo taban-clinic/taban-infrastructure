@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Apply services/<service>/ from this pinned checkout to the live Docker Compose project.
 #
-#   apply-service <service> [--dry-run]        service: lab-directus | umami | supabase
+#   apply-service <service> [--dry-run] [--recreate]     service: lab-directus | umami | supabase
 #
 # Runs the compose files straight from the checkout with the live project name and
 # directory, recreates ONLY the listed services whose config hash differs from the
 # running container, waits for them (--wait), then runs the HTTP checks.
+# --recreate recreates every listed service even when nothing differs, e.g. after the
+# live directory moved: the config hash doesn't include the project directory, so the
+# containers' labels would otherwise keep pointing at the old one.
 # Exit codes: 0 applied or nothing to do, 1 refused, 2 applied but unhealthy,
 # 3 another apply holds the lock, 64 usage.
 set -euo pipefail
@@ -13,17 +16,24 @@ set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/common.sh"
 
 usage() {
-  echo "usage: apply-service <service> [--dry-run]" >&2
+  echo "usage: apply-service <service> [--dry-run] [--recreate]" >&2
   exit 64
 }
 
-if [ $# -lt 1 ] || [ $# -gt 2 ]; then usage; fi
+[ $# -ge 1 ] || usage
+name="$1"
+shift
 dry_run=0
-if [ $# -eq 2 ]; then
-  [ "$2" = --dry-run ] || usage
-  dry_run=1
-fi
-load_service "$1"
+recreate=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1 ;;
+    --recreate) recreate=1 ;;
+    *) usage ;;
+  esac
+  shift
+done
+load_service "$name"
 
 [ -d "$LIVE_DIR" ] || die "live directory not found: $LIVE_DIR"
 for f in "${REQUIRE_FILES[@]}"; do
@@ -34,22 +44,33 @@ sha="$(git -C "$REPO" rev-parse HEAD)"
 compose config --quiet || die "compose config is invalid for $svc"
 
 mapfile -t drift < <(drifted_services)
-if [ "${#drift[@]}" -eq 0 ]; then
-  log "✓ $svc ($PROJECT) already matches ${sha:0:7}; nothing to apply"
-  exit 0
-fi
-changed=()
 for line in "${drift[@]}"; do
   case "$line" in
     *" not-defined-in-compose") die "apply.conf lists '${line%% *}' but the compose files don't define it" ;;
   esac
-  log "  $line"
-  changed+=("${line%% *}")
 done
-log "$svc ($PROJECT) @ ${sha:0:7}: will recreate ${changed[*]}"
+
+up_args=(-d --no-deps)
+if [ "$recreate" -eq 1 ]; then
+  for line in "${drift[@]}"; do log "  $line"; done
+  changed=("${SERVICES[@]}")
+  up_args+=(--force-recreate)
+  log "$svc ($PROJECT) @ ${sha:0:7}: --recreate: will recreate ${changed[*]}"
+else
+  if [ "${#drift[@]}" -eq 0 ]; then
+    log "✓ $svc ($PROJECT) already matches ${sha:0:7}; nothing to apply"
+    exit 0
+  fi
+  changed=()
+  for line in "${drift[@]}"; do
+    log "  $line"
+    changed+=("${line%% *}")
+  done
+  log "$svc ($PROJECT) @ ${sha:0:7}: will recreate ${changed[*]}"
+fi
 
 if [ "$dry_run" -eq 1 ]; then
-  compose up --dry-run --no-deps -d "${changed[@]}" >&2 || true
+  compose up --dry-run "${up_args[@]}" "${changed[@]}" >&2 || true
   log "dry run: nothing changed"
   exit 0
 fi
@@ -60,7 +81,7 @@ flock -n 9 || die "another apply of $svc is in progress" 3
 prev_sha="$(jq -r '.sha // empty' "$STATE_DIR/$svc.json" 2>/dev/null || true)"
 
 result=ok
-if ! compose up -d --no-deps --wait --wait-timeout "$WAIT_TIMEOUT" "${changed[@]}"; then result=unhealthy; fi
+if ! compose up "${up_args[@]}" --wait --wait-timeout "$WAIT_TIMEOUT" "${changed[@]}"; then result=unhealthy; fi
 if [ "$result" = ok ] && [ "${#HTTP_CHECKS[@]}" -gt 0 ] && ! wait_http; then result=unhealthy; fi
 
 printf '%s %s result=%s sha=%s recreated=%s\n' "$(now)" "$svc" "$result" "$sha" "${changed[*]}" >>"$STATE_DIR/apply.log"

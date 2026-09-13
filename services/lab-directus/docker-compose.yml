@@ -39,6 +39,11 @@ services:
       postgres:
         condition: service_healthy
     mem_limit: 512m
+    volumes:
+      # Directus's default local storage. Without a volume, uploaded files live inside
+      # the container and are destroyed on every recreate.
+      - uploads:/directus/uploads
 
 volumes:
   pgdata:
+  uploads:

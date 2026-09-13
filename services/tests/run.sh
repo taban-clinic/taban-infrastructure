@@ -173,6 +173,13 @@ check "state records the applied sha" test "$(jq -r .sha "$T/state/services/demo
 before="$(ups)"
 check "second apply is a no-op" expect_exit 0 "$apply" demo
 check "no-op did not call up" test "$(ups)" = "$before"
+recreates() { grep -c -- ' up -d --no-deps --force-recreate --wait' "$T/state/docker.log" 2>/dev/null || true; }
+check "--dry-run --recreate exits 0" expect_exit 0 "$apply" demo --dry-run --recreate
+check "--dry-run --recreate recreates nothing" test "$(recreates)" = 0
+check "--recreate with no drift exits 0" expect_exit 0 "$apply" demo --recreate
+check "--recreate force-recreated every managed service" bash -c 'grep -- " up -d --no-deps --force-recreate --wait" "$1" | tail -1 | grep -qE " db web$"' _ "$T/state/docker.log"
+check "--recreate never touches unmanaged services" test ! -e "$T/state/running/demo-proj/worker"
+check "options in either order" expect_exit 0 "$apply" demo --recreate --dry-run
 set_image web web:2
 check "changed service applies" expect_exit 0 "$apply" demo
 check "only web was recreated" bash -c 'grep " up -d --no-deps --wait" "$1" | tail -1 | grep -qE " web$"' _ "$T/state/docker.log"

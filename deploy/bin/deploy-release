@@ -37,6 +37,7 @@ cmd_deploy() {
   if wait_healthy; then
     record ok "$release_id" "$prev"
     prune "$release_id" "$prev"
+    remove_uploaded_artifact "$tgz"
     log "✓ $app $release_id is live"
     return 0
   fi

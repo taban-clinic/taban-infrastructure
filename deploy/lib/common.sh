@@ -7,6 +7,7 @@
 APPS_ROOT="${APPS_ROOT:-$HOME/apps}"
 DEPLOY_DIR="${DEPLOY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CONF_DIR="${CONF_DIR:-$DEPLOY_DIR/apps}"
+INCOMING_DIR="${INCOMING_DIR:-$APPS_ROOT/incoming}"
 HEALTH_HOST="${HEALTH_HOST:-127.0.0.1}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-2}"
@@ -15,6 +16,19 @@ read -r -a SYSTEMCTL_CMD <<<"${SYSTEMCTL:-sudo systemctl}"
 now() { date -u +%FT%TZ; }
 log() { printf '%s %s\n' "$(now)" "$*" >&2; }
 die() { log "✗ $1"; exit "${2:-1}"; }
+
+# remove_uploaded_artifact <tgz>: once a release is installed and live, its unpacked
+# directory is the real copy, so the upload is dropped. Only files that sit directly in
+# INCOMING_DIR are removed, never an artifact an operator passed from somewhere else.
+remove_uploaded_artifact() {
+  local dir incoming
+  dir="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 0
+  incoming="$(cd "$INCOMING_DIR" 2>/dev/null && pwd -P)" || return 0
+  if [ "$dir" = "$incoming" ]; then
+    rm -f -- "$1" "$1.sha256"
+    log "removed uploaded $(basename "$1") from $INCOMING_DIR"
+  fi
+}
 
 # load_app <app>: validates the name, sources deploy/apps/<app>.conf and sets
 # app, app_dir, UNIT, PORT, ENV_FILES, HEALTH_PATHS, KEEP_RELEASES.

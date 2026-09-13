@@ -107,6 +107,22 @@ bin/deploy-release status dr-yousefi-site
   and clinic-next/implant-rescue-institute use `Wants=docker.service` instead of
   `Requires=` (a Docker restart no longer stops the sites).
 
+## Memory limits are guards, not a budget
+
+The per-process limits on this box add up to more than it has. Checked 2026-09-13:
+
+| Where | Limit |
+|---|---|
+| Site units (`MemoryMax`) | 300M + 400M + 400M = 1.1G |
+| Containers (`mem_limit`) | lab-directus 512M, lab-postgres 512M, supabase-db 512M, umami 512M, umami-db 512M, supabase-auth 128M, supabase-rest 128M = 2.8G |
+| No limit | supabase-envoy, supabase-meta, supabase-studio |
+| **Box** | **2.8G RAM + 3.0G swap** |
+
+So the ~3.9G of limits only stops a single runaway process. It does not stop everything
+from peaking at once. The box stays up because typical usage is far lower, with swap and
+`earlyoom` as the backstop. Before adding a service here, or raising a limit, check what is
+actually in use (`free -h`, `docker stats --no-stream`, `systemd-cgtop`), not the limits.
+
 ## Manual operations
 
 ```bash

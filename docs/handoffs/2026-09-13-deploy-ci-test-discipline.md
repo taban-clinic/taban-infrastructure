@@ -14,6 +14,13 @@ which is a **reserved keyword** in the cross-session messaging tool that silentl
 instead of reaching the actual session; renaming it fixed direct messaging). If this pattern
 recurs, don't name a session `main`.
 
+A related, more general hazard: multiple sessions can share the same repo's **main checkout**
+(not a worktree) if they don't each use `scripts/new-issue`. Twice tonight, another session's
+`git checkout <its-feature-branch>` in a shared main checkout left `implant-rescue-institute`
+on someone else's branch mid-session, from this session's point of view. No work was lost
+(the tree was clean both times), but it's worth checking `git status --short --branch` before
+trusting a main checkout's branch, rather than assuming it's still on `dev`.
+
 ## What's live now
 
 ### 1. RFC + Discussion resolved
@@ -89,43 +96,75 @@ it): `clinic-next`'s `lab/db-constraints.test.ts` needed a live Directus and was
 the `test:unit`/`test:integration` split; `implant-rescue-institute` had no split at all
 (`lab/permissions.test.ts` and `lab/schema.test.ts` need one too — added the split).
 
-### 8. Release-build workflow — `dr-yousefi-site` only so far
-[dr-yousefi-site#18](https://github.com/taban-clinic/dr-yousefi-site/pull/18) (open, CI green,
-not yet merged): the build side of decision D8 — triggers on a `v*` tag, builds standalone
-output on `ubuntu-latest` with **Node 22.14.0 pinned** to match the server exactly
-(`better-sqlite3` needs the matching ABI), assembles the artifact per `deploy/README.md`'s
-contract exactly, hard-fails the build if any `.env*` ends up at the root, and publishes as a
-GitHub Release asset. `clinic-next`/`implant-rescue-institute` don't have this yet — see
-follow-ups.
+### 8. Release-build + ship-automation workflows — all 3 apps, fully live
+The build side of D8 (`.github/workflows/release.yml` per repo: `v*` tag → standalone build
+on `ubuntu-24.04` with **Node 22.14.0 pinned** → artifact assembled per `deploy/README.md`'s
+contract → hard `.env*` gate → GitHub Release) shipped for `dr-yousefi-site` first
+([#18](https://github.com/taban-clinic/dr-yousefi-site/pull/18)), then `clinic-next`
+([#46](https://github.com/taban-clinic/clinic-next/pull/46)) and
+`implant-rescue-institute` ([#40](https://github.com/taban-clinic/implant-rescue-institute/pull/40))
+once each got its `output: "standalone"` switch (D4).
+
+The **ship side** (D8's other half — artifact → server) is now fully automated too, not just
+built: a `ship` job on the m4 self-hosted runner (`m4-deploy-runner`, labels `m4`/`deploy`/
+`macos-arm64`) downloads the Release asset, re-verifies its checksum, rsyncs it over the
+tailnet with a **pinned SSH host key** (not trust-on-first-use — that needs an interactive
+yes/no a CI runner can't give), then runs `deploy <app> <artifact>` through `deploy-gate`,
+translating exit codes 0/1/2/3 into clear job failures. Landed for `dr-yousefi-site` first
+([dr-yousefi-site#20](https://github.com/taban-clinic/dr-yousefi-site/pull/20), reviewed and
+fixed — host-key pinning, tag filter restricted to exact `vX.Y.Z` since `v*` would auto-deploy
+a pre-release tag to production, 15-minute timeout), then copied to
+[clinic-next#47](https://github.com/taban-clinic/clinic-next/pull/47) and
+[implant-rescue-institute#43](https://github.com/taban-clinic/implant-rescue-institute/pull/43).
+
+**A `v*` tag push now goes all the way to production, hands-off, with automatic rollback on a
+failed health check.** Proven working, not just designed: first real deploy through the whole
+pipeline (`dr-yousefi-site v1.0.0`, ship run manually before the automation existed) worked on
+the first try; subsequent tags (`dr-yousefi-site v1.0.1`, `clinic-next v1.0.0`,
+`implant-rescue-institute v1.0.0`/`v1.0.1`) exist as real GitHub Releases.
+
+### 9. All three apps migrated to the release layout
+`dr-yousefi-site` (`--seed-from-live`, since it was already standalone), then `clinic-next`
+and `implant-rescue-institute` (`--from-tarball`, once their first CI artifact existed) — all
+via `migrate-app`, run server-side. Old directories (`~/dr-yousefi-site`, `~/clinic-next`,
+`~/implant-rescue-institute`) were **never modified**, only read from; each app now runs from
+`~/apps/<app>/current` per `deploy/README.md`'s layout.
+
+### 10. Three more `deploy`/`services` fixes landed after the initial pipeline PRs
+- [#21](https://github.com/taban-clinic/taban-infrastructure/pull/21) — `migrate-app`'s advice
+  to delete the old app dir after a week was wrong for `clinic-next`/`implant-rescue-institute`:
+  their old dirs also host the `lab` Docker Compose project (Postgres/Directus), so deleting
+  them would have taken down shared infra, not just cleaned up a stale directory.
+- [#22](https://github.com/taban-clinic/taban-infrastructure/pull/22) — `deploy-release` now
+  removes the uploaded artifact from `~/apps/incoming/` after a successful deploy, instead of
+  letting them accumulate.
+- [#23](https://github.com/taban-clinic/taban-infrastructure/pull/23) — relocated the
+  `lab-directus` Compose project out of the app directories entirely (into its own home under
+  `services/`), added a **named volume for Directus's uploaded files** (they previously lived
+  inside the container — meaning a container recreate would have silently lost every uploaded
+  file), and added `apply-service --recreate`.
 
 ## Open follow-ups (in rough priority order)
 
-1. **Merge dr-yousefi-site#18** (release-build workflow) once reviewed.
-2. **`clinic-next`/`implant-rescue-institute` need the `output: "standalone"` switch** before
-   they can get their own release-build workflow — check whether this is already done or
-   still pending (decision D4, described as "approved" by `taban-hub` but not confirmed done
-   as of this handoff).
-3. **m4 self-hosted runner + deploy key setup** — `taban-hub` said it was "handling that
-   separately"; confirm status. This is the piece that actually pulls a built artifact and
-   calls `deploy-gate` — without it, the release-build workflow produces artifacts nobody
-   ships yet.
-4. **`sops`+`age` secrets pilot** — the one item from the original RFC phasing not started.
-   Plan (from Discussion #15's synthesis): generate one `age` keypair, add `.sops.yaml`,
-   migrate one `~/secrets/*.env` file as a pilot, verify round-trip. A scope question (which
-   file, local-only vs. touching the server) was sent to `taban-hub` and not yet answered —
-   re-ask before starting.
-5. **Alert channel for `drift-check`'s `ALERT_CMD`** — open question for the user, noted in
+1. **`sops`+`age` secrets pilot** — the one item from the original RFC phasing never started
+   tonight. Plan (from Discussion #15's synthesis): generate one `age` keypair, add
+   `.sops.yaml`, migrate one `~/secrets/*.env` file as a pilot, verify round-trip.
+   Deliberately deferred to next session per the user's explicit call.
+2. **Alert channel for `drift-check`'s `ALERT_CMD`** — open question for the user, noted in
    PR #19's description, not yet decided.
-6. **Migrate `clinic-next`/`implant-rescue-institute` to the new release layout** — blocked on
-   their first standalone artifact existing (items 2–3 above).
-7. Pre-existing, unrelated to tonight: [taban-infrastructure#9](https://github.com/taban-clinic/taban-infrastructure/pull/9)
+3. **Old app directories** (`~/dr-yousefi-site`, `~/clinic-next`, `~/implant-rescue-institute`)
+   are still on the server, untouched, as the migration runbook intends — safe to remove only
+   after real confidence in the new pipeline (a week+ of normal deploys was the original
+   guidance) and, per #21 above, only the parts that aren't also hosting the `lab` Compose
+   project.
+4. Pre-existing, unrelated to tonight: [taban-infrastructure#9](https://github.com/taban-clinic/taban-infrastructure/pull/9)
    (Dockerized clinic-next stack spec) and issues
    [#1](https://github.com/taban-clinic/taban-infrastructure/issues/1)/[#5](https://github.com/taban-clinic/taban-infrastructure/issues/5)/[#6](https://github.com/taban-clinic/taban-infrastructure/issues/6)/[#10](https://github.com/taban-clinic/taban-infrastructure/issues/10)/[#11](https://github.com/taban-clinic/taban-infrastructure/issues/11)
    are still open, deliberately not re-litigated by this session's work (see Discussion #15
    §4).
-8. **[taban-infrastructure#14](https://github.com/taban-clinic/taban-infrastructure/issues/14)
-   itself is still open** — its acceptance criteria (P2/P3 CI, sops+age pilot) aren't all
-   done yet. Don't close it until items 2–4 above land.
+5. **[taban-infrastructure#14](https://github.com/taban-clinic/taban-infrastructure/issues/14)
+   is still open** — deliberately: item 1 above (sops+age) is its one unfinished acceptance
+   criterion. Close it once that lands, not before.
 
 ## Also fixed during this session's wrap-up (unrelated to the RFC, found doing housekeeping)
 
@@ -140,12 +179,18 @@ never actually landed on `dev`.
 
 - `taban-infrastructure`: #13 (previous session's handoff, caught during wrap-up), #16
   (`services/` in git), #17 (lab-directus port exposure fix), #18 (deploy/ release system),
-  #19 (apply-service + drift-check)
-- `dr-yousefi-site`: #17 (rsync `--max-delete` + CI)
-- `clinic-next`: #44 (lab exposure fix companion), #45 (rsync `--max-delete` + CI)
-- `implant-rescue-institute`: #37 (rsync `--max-delete` + CI)
+  #19 (apply-service + drift-check), #20 (this doc's first version), #21 (migrate-app old-dir
+  advice fix), #22 (artifact cleanup after deploy), #23 (lab-directus relocation + persistent
+  Directus uploads volume)
+- `dr-yousefi-site`: #17 (rsync `--max-delete` + CI), #18 (release-build workflow), #20
+  (ship automation, reviewed/fixed)
+- `clinic-next`: #44 (lab exposure fix companion), #45 (rsync `--max-delete` + CI), #46
+  (standalone + release-build workflow), #47 (ship automation)
+- `implant-rescue-institute`: #37 (rsync `--max-delete` + CI), #40 (standalone +
+  release-build workflow), #41 (sitemap.ts SEO fix — was prerendering once at build time
+  against a placeholder Directus URL, shipping an empty sitemap), #43 (ship automation)
 
-Open, not yet merged: `dr-yousefi-site`#18 (release-build workflow, CI green).
+Everything above is merged — nothing left open from tonight's PRs.
 
 ## Related memory / prior context
 

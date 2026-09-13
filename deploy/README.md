@@ -15,7 +15,7 @@ v* tag (scripts/promote) ──► GitHub Actions (ubuntu x64, Node 22.14.0) ─
 |---|---|---|---|---|
 | `dr-yousefi-site` | `dr-yousefi-site` | 7332 | `.env` | `/` |
 | `clinic-next` | `clinic-next` | 7333 | `.env.production.local` | `/`, `/booking` |
-| `implant-rescue-institute` | `implant-rescue-institute` | 7334 | `.env.production.local` | `/` |
+| `implant-rescue-institute` | `implant-rescue-institute` | 7334 | `.env.production.local` | `/`, `/_next/image?url=%2Fdoctor%2Fdr-yousefi.png&w=384&q=75` (catches a build without sharp) |
 
 Per-app settings live in `apps/<app>.conf`, units in `systemd/<unit>.service`.
 
